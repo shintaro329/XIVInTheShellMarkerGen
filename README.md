@@ -16,8 +16,8 @@
 }
 ~~~
 
-* CAST_NAME_LIST：对应敌对*施法*列表
-* DAMAGE_NAME_LIST：对应我方*受到伤害*列表
+* CAST_NAME_LIST：对应敌对**施法**列表
+* DAMAGE_NAME_LIST：对应我方**受到伤害**列表
 * CONVERT_DIC：将上述名称在导出时替换为指定的名称
 * LOGS_ID：logs id，对应下面logs链接中的reports/到?的部分
 * FIGHT_ID：战斗id对应下面logs链接中的fight=后的部分
