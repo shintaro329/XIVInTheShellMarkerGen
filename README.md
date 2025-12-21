@@ -24,4 +24,10 @@
 * FILE_NAME：导出的时间轴名称
 * API_KEY：V1客户端密钥，在[设置](https://cn.fflogs.com/profile)中获取
 
-https://cn.fflogs.com/reports/TXN9QjtzBLcFrVKg?fight=51
+示例链接：https://cn.fflogs.com/reports/TXN9QjtzBLcFrVKg?fight=51
+
+
+
+部分marker可能需要手动调整
+
+由于副本情况可能比较复杂，Untargetable部分用了Info实现，可以在生成后手动调整为Untargetable段
