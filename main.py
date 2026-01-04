@@ -10,7 +10,68 @@ FIGHTS_URL_PREFIX = "https://cn.fflogs.com/v1/report/fights/"
 CASTS_URL_PREFIX = "https://cn.fflogs.com/v1/report/events/casts/"
 SUMMARY_URL_PREFIX = "https://cn.fflogs.com/v1/report/events/summary/"
 DAMAGE_URL_PREFIX = "https://cn.fflogs.com/v1/report/events/damage-taken/"
-ANY_URL_PREFIX = "https://cn.fflogs.com/v1/report/events/any/" # 之前版本补充的
+ANY_URL_PREFIX = "https://cn.fflogs.com/v1/report/events/any/"
+
+# 配置文件名
+CONFIG_FILE = "timeline_config.json"
+
+# --- 配置管理类 (新增) ---
+class ConfigManager:
+    @staticmethod
+    def load_all_config():
+        if os.path.exists(CONFIG_FILE):
+            try:
+                with open(CONFIG_FILE, 'r', encoding='utf-8') as f:
+                    return json.load(f)
+            except:
+                return {}
+        return {}
+
+    @staticmethod
+    def save_all_config(data):
+        try:
+            with open(CONFIG_FILE, 'w', encoding='utf-8') as f:
+                json.dump(data, f, ensure_ascii=False, indent=2)
+        except Exception as e:
+            print(f"保存配置失败: {e}")
+
+    @staticmethod
+    def get_zone_config(zone_id):
+        all_data = ConfigManager.load_all_config()
+        # JSON key 必须是字符串
+        return all_data.get(str(zone_id), {})
+
+    @staticmethod
+    def update_zone_config(zone_id, new_zone_data):
+        # 1. 加载所有配置
+        all_data = ConfigManager.load_all_config()
+        z_key = str(zone_id)
+        
+        existing_zone_data = all_data.get(z_key, {})
+        existing_skills = existing_zone_data.get('skills', {})
+        
+        new_skills = new_zone_data.get('skills', {})
+        existing_skills.update(new_skills)
+        existing_zone_data.update(new_zone_data)
+        existing_zone_data['skills'] = existing_skills
+        
+        all_data[z_key] = existing_zone_data
+        ConfigManager.save_all_config(all_data)
+
+    @staticmethod
+    def get_api_key():
+        """读取全局缓存的 API Key"""
+        all_data = ConfigManager.load_all_config()
+        return all_data.get("GLOBAL_API_KEY", "")
+
+    @staticmethod
+    def save_api_key(api_key):
+        """保存 API Key 到全局配置"""
+        all_data = ConfigManager.load_all_config()
+        # 只有当 Key 不为空且发生变化时才保存，减少IO操作（可选）
+        if api_key and all_data.get("GLOBAL_API_KEY") != api_key:
+            all_data["GLOBAL_API_KEY"] = api_key
+            ConfigManager.save_all_config(all_data)
 
 # --- 基础类定义 ---
 
@@ -19,15 +80,17 @@ class RuntimeConfig:
         self.logs_id = logs_id
         self.fight_id = fight_id
         self.api_key = api_key
-        # 如果勾选翻译，生成对应的URL参数后缀
         self.translate_param = "&translate=true" if translate else ""
         self.convert_dic = {} 
 
 class Fight:
-    def __init__(self, start_time, end_time, fight_id):
+    def __init__(self, start_time, end_time, fight_id, zone_id=0, zone_name="Unknown"):
         self.start_time = start_time
         self.end_time = end_time
         self.fight_id = fight_id
+        # 新增 Zone 信息
+        self.zone_id = zone_id
+        self.zone_name = zone_name
 
 class Marker:
     def __init__(self, time, marker_type, duration, desc, source, raw):
@@ -54,17 +117,25 @@ class Marker:
     def get_cast_end_time(self):
         return self.time + self.duration
 
-# --- GUI: 技能配置弹窗 ---
+# --- GUI: 技能配置弹窗 (修改) ---
 
 class SkillConfigDialog(tk.Toplevel):
-    def __init__(self, parent, skill_list):
+    def __init__(self, parent, skill_list, zone_id, zone_name):
         super().__init__(parent)
-        self.title("导出配置与技能过滤")
+        self.zone_id = zone_id
+        self.title(f"导出配置 - {zone_name} (ZoneID: {zone_id})")
         self.geometry("600x600")
-        self.result = None # 用于存储返回的配置
-        self.skill_vars = {} # 存储控件变量
+        self.result = None 
+        self.skill_vars = {}
 
-        # 设置模态
+        # 1. 读取该 Zone 的本地配置
+        self.saved_config = ConfigManager.get_zone_config(self.zone_id)
+        
+        # 获取保存的值，如果不存在则使用默认值
+        default_interval = self.saved_config.get('min_interval', 1000)
+        default_tracks = self.saved_config.get('max_tracks', 20)
+        saved_skills = self.saved_config.get('skills', {}) # 格式: {'技能名': {'export': True, 'rename': 'xxx'}}
+
         self.transient(parent)
         self.grab_set()
         
@@ -74,19 +145,18 @@ class SkillConfigDialog(tk.Toplevel):
 
         tk.Label(top_frame, text="最小间隔(ms):").grid(row=0, column=0, padx=5)
         self.interval_entry = tk.Entry(top_frame, width=10)
-        self.interval_entry.insert(0, "1000")
+        self.interval_entry.insert(0, str(default_interval)) # 填入保存值
         self.interval_entry.grid(row=0, column=1, padx=5)
 
         tk.Label(top_frame, text="最大轨道数(Max Tracks):").grid(row=0, column=2, padx=5)
         self.tracks_entry = tk.Entry(top_frame, width=10)
-        self.tracks_entry.insert(0, "20")
+        self.tracks_entry.insert(0, str(default_tracks)) # 填入保存值
         self.tracks_entry.grid(row=0, column=3, padx=5)
 
-        # --- 中部：技能列表 (带滚动条) ---
-        list_frame = tk.LabelFrame(self, text="技能筛选与重命名 (打钩导出，修改文本框重命名)", padx=5, pady=5)
+        # --- 中部：技能列表 ---
+        list_frame = tk.LabelFrame(self, text="技能筛选与重命名", padx=5, pady=5)
         list_frame.pack(fill='both', expand=True, padx=10, pady=5)
 
-        # 创建 Canvas 和 Scrollbar
         canvas = tk.Canvas(list_frame)
         scrollbar = ttk.Scrollbar(list_frame, orient="vertical", command=canvas.yview)
         self.scrollable_frame = tk.Frame(canvas)
@@ -102,15 +172,12 @@ class SkillConfigDialog(tk.Toplevel):
         canvas.pack(side="left", fill="both", expand=True)
         scrollbar.pack(side="right", fill="y")
         
-        # 绑定鼠标滚轮
         def _on_mousewheel(event):
             canvas.yview_scroll(int(-1*(event.delta/120)), "units")
         canvas.bind_all("<MouseWheel>", _on_mousewheel)
 
-        # 填充技能列表
         sorted_skills = sorted(list(skill_list))
         
-        # 表头
         tk.Label(self.scrollable_frame, text="导出?", font=('bold')).grid(row=0, column=0, padx=5, pady=5)
         tk.Label(self.scrollable_frame, text="原名", font=('bold')).grid(row=0, column=1, padx=5, pady=5, sticky='w')
         tk.Label(self.scrollable_frame, text="导出名称 (可编辑)", font=('bold')).grid(row=0, column=2, padx=5, pady=5, sticky='w')
@@ -118,10 +185,14 @@ class SkillConfigDialog(tk.Toplevel):
         for idx, skill_name in enumerate(sorted_skills):
             row = idx + 1
             
-            # 是否导出变量
-            check_var = tk.BooleanVar(value=True)
-            # 重命名变量
-            rename_var = tk.StringVar(value=skill_name)
+            # 从配置中读取默认状态
+            skill_conf = saved_skills.get(skill_name, {})
+            # 默认勾选，默认显示原名
+            default_check = skill_conf.get('export', True)
+            default_rename = skill_conf.get('rename', skill_name)
+
+            check_var = tk.BooleanVar(value=default_check)
+            rename_var = tk.StringVar(value=default_rename)
             
             self.skill_vars[skill_name] = {
                 'check': check_var,
@@ -141,7 +212,7 @@ class SkillConfigDialog(tk.Toplevel):
         btn_frame = tk.Frame(self, pady=10)
         btn_frame.pack(fill='x')
         
-        tk.Button(btn_frame, text="确定生成", command=self.on_ok, bg="#dddddd", width=15).pack(side='right', padx=20)
+        tk.Button(btn_frame, text="确定并保存配置", command=self.on_ok, bg="#dddddd", width=20).pack(side='right', padx=20)
         tk.Button(btn_frame, text="取消", command=self.destroy, width=15).pack(side='right', padx=20)
 
     def on_ok(self):
@@ -152,13 +223,31 @@ class SkillConfigDialog(tk.Toplevel):
             messagebox.showerror("错误", "时间间隔和轨道数必须是整数")
             return
 
-        # 收集技能配置
-        filter_map = {} # {原名: 新名}，如果不在字典里则说明不导出
-        
+        filter_map = {}
+        skills_config_to_save = {}
+
         for original_name, vars in self.skill_vars.items():
-            if vars['check'].get():
-                new_name = vars['rename'].get().strip()
-                filter_map[original_name] = new_name if new_name else original_name
+            is_checked = vars['check'].get()
+            rename_val = vars['rename'].get().strip()
+            
+            # 1. 准备保存到文件的数据
+            # 即使没勾选，也保存这个设置，下次打开记得没勾选
+            skills_config_to_save[original_name] = {
+                'export': is_checked,
+                'rename': rename_val
+            }
+
+            # 2. 准备传给生成器的数据
+            if is_checked:
+                filter_map[original_name] = rename_val if rename_val else original_name
+
+        # --- 保存配置到本地 ---
+        new_zone_config = {
+            'min_interval': min_interval,
+            'max_tracks': max_tracks,
+            'skills': skills_config_to_save
+        }
+        ConfigManager.update_zone_config(self.zone_id, new_zone_config)
 
         self.result = {
             'min_interval': min_interval,
@@ -193,7 +282,6 @@ def parse_url(url):
     return logs_id, fight_id
 
 def get_fight_data(config):
-    # 【修改】：追加 config.translate_param
     url = f"{FIGHTS_URL_PREFIX}{config.logs_id}?api_key={config.api_key}{config.translate_param}"
     try:
         response = requests.get(url)
@@ -208,14 +296,18 @@ def get_fight_data(config):
             
         if fight_data is None:
             return None
-        return Fight(fight_data["start_time"], fight_data["end_time"], fight_data["id"])
+        
+        # 【修改】提取 ZoneID 和 ZoneName
+        zone_id = fight_data.get('zoneID', 0)
+        zone_name = fight_data.get('zoneName', 'Unknown Zone')
+        
+        return Fight(fight_data["start_time"], fight_data["end_time"], fight_data["id"], zone_id, zone_name)
     except Exception as e:
         print(f"获取战斗数据失败: {e}")
         return None
 
 def get_real_fight_offset(fight, config):
     search_end = fight.start_time + 5000 
-    # 【修改】：追加 config.translate_param
     damage_url = f"{DAMAGE_URL_PREFIX}{config.logs_id}?start={fight.start_time}&end={search_end}&hostility=1&api_key={config.api_key}{config.translate_param}"
     try:
         response = requests.get(damage_url)
@@ -230,7 +322,6 @@ def get_real_fight_offset(fight, config):
     return fight.start_time
 
 def get_cast_source(fight, config, time_offset):
-    # 【修改】：追加 config.translate_param
     url = f"{CASTS_URL_PREFIX}{config.logs_id}?start={fight.start_time}&end={fight.end_time}&hostility=1&api_key={config.api_key}{config.translate_param}"
     try:
         response = requests.get(url)
@@ -243,7 +334,6 @@ def get_cast_source(fight, config, time_offset):
     events = data.get('events', [])
     clean_events = []
     
-    # 第1轮：基础清洗
     for i, event in enumerate(events):
         name = event.get('ability', {}).get('name', '')
         
@@ -256,7 +346,6 @@ def get_cast_source(fight, config, time_offset):
             'to_delete': False
         })
 
-    # 第2轮：处理同时施法
     group_map = {}
     for item in clean_events:
         key = (item['timestamp'], item['ability_name'])
@@ -279,7 +368,6 @@ def get_cast_source(fight, config, time_offset):
                         'origin_duration': hidden['event'].get('duration', 0)
                     })
 
-    # 第3轮：连带消除
     for task in hidden_cleanup_tasks:
         s_id = task['sourceInstance']
         a_name = task['ability_name']
@@ -294,13 +382,12 @@ def get_cast_source(fight, config, time_offset):
                 target_item['to_delete'] = True
                 break
 
-    # 第4轮：生成 Marker 对象
     source = []
     for item in clean_events:
         if item['to_delete']: continue
         
         event = item['event']
-        desc = item['ability_name'] # 暂时保持原名，后续处理
+        desc = item['ability_name'] 
         duration = event.get('duration', 0)
         timestamp = item['timestamp']
         
@@ -309,7 +396,6 @@ def get_cast_source(fight, config, time_offset):
         m = Marker(timestamp - time_offset, "Info", duration, desc, "casts", event)
         source.append(m)
 
-    # 简单去重
     final_source = []
     cast_ignore_time = 100 
     last_marker = None
@@ -327,9 +413,7 @@ def get_untargetable_list(fight, config, time_offset):
     source = []
     events_list = []
 
-    # 1. Targetability
     filter_exp = 'type="targetabilityupdate"'
-    # 【修改】：追加 config.translate_param
     summary_url = f"{SUMMARY_URL_PREFIX}{config.logs_id}?start={fight.start_time}&end={fight.end_time}&filter={filter_exp}&api_key={config.api_key}{config.translate_param}"
     try:
         resp = requests.get(summary_url)
@@ -345,9 +429,7 @@ def get_untargetable_list(fight, config, time_offset):
     except Exception as e:
         print(f"获取Summary数据失败: {e}")
 
-    # 2. Overkill
     filter_exp = "overkill>0"
-    # 【修改】：追加 config.translate_param
     damage_url = f"{DAMAGE_URL_PREFIX}{config.logs_id}?start={fight.start_time}&end={fight.end_time}&hostility=1&filter={filter_exp}&api_key={config.api_key}{config.translate_param}"
     try:
         resp = requests.get(damage_url)
@@ -361,10 +443,8 @@ def get_untargetable_list(fight, config, time_offset):
     except Exception:
         pass
 
-    # 3. 去重与计算
     events_list.sort(key=lambda x: x['timestamp'])
     
-    # 100ms 窗口去重
     unique_events = []
     last_seen_map = {}
     threshold = 100 
@@ -418,7 +498,6 @@ def get_untargetable_list(fight, config, time_offset):
 
     return source
 
-# 【修改】：接收 config 以动态设置间隔和最大轨道数
 def make_track_list(info_list, min_interval, max_tracks):
     marker_list_dic = {}
     info_list.sort(key=lambda x: x.time)
@@ -428,7 +507,6 @@ def make_track_list(info_list, min_interval, max_tracks):
         marker_list = marker_list_dic.get(track, [])
         last_end_time = marker_list[-1].get_cast_end_time() if marker_list else 0
         
-        # 使用动态传入的间隔
         while marker.time - last_end_time < min_interval:
             track += 1
             marker_list = marker_list_dic.get(track, [])
@@ -442,7 +520,6 @@ def make_track_list(info_list, min_interval, max_tracks):
     sorted_tracks = sorted(marker_list_dic.keys())
     
     for track in sorted_tracks:
-        # 轨道数限制
         if track >= max_tracks:
             break
         track_list.append({
@@ -455,49 +532,39 @@ def make_track_list(info_list, min_interval, max_tracks):
 def convert_marker_list(marker_list):
     return [marker.to_dict() for marker in marker_list]
 
-# --- 逻辑拆分 ---
-
 def fetch_log_data(logs_url, api_key, is_translate):
-    """阶段1: 只抓取数据，不生成 Tracks"""
     try:
         logs_id, fight_id = parse_url(logs_url)
     except ValueError as e:
-        return None, None, str(e)
+        return None, None, None, str(e) # 修改返回值数量
 
-    # 【修改】：传入 translate 参数
     config = RuntimeConfig(logs_id, fight_id, api_key, translate=is_translate)
     
     fight = get_fight_data(config)
     if fight is None:
-        return None, None, "找不到对应战斗数据 (Fight ID 错误或 API Key 无效)"
+        return None, None, None, "找不到对应战斗数据 (Fight ID 错误或 API Key 无效)"
 
     time_offset = get_real_fight_offset(fight, config)
     
-    # 获取原始 Marker 列表
     cast_list = get_cast_source(fight, config, time_offset)
     untarget_list = get_untargetable_list(fight, config, time_offset)
     
-    return cast_list, untarget_list, "Success"
+    # 【修改】：返回 fight 对象以便获取 zone_id
+    return cast_list, untarget_list, fight, "Success"
 
 def generate_final_json(cast_list, untarget_list, user_config):
-    """阶段2: 根据用户配置过滤并生成 JSON"""
-    
     min_interval = user_config['min_interval']
     max_tracks = user_config['max_tracks']
-    filter_map = user_config['filter_map'] # {原名: 新名} (不在其中的已被过滤)
+    filter_map = user_config['filter_map']
 
-    # 1. 过滤和重命名
     final_cast_list = []
     for marker in cast_list:
-        # 如果原名不在 map 中，说明用户取消了勾选
         if marker.desc not in filter_map:
             continue
         
-        # 重命名
         marker.desc = filter_map[marker.desc]
         final_cast_list.append(marker)
 
-    # 2. 生成轨道
     untargetable_track = {
         "fileType": "MarkerTrackIndividual", 
         "track": -1,
@@ -514,13 +581,11 @@ def generate_final_json(cast_list, untarget_list, user_config):
     
     return result_json
 
-# --- GUI 主程序 ---
-
 class Application(tk.Tk):
     def __init__(self):
         super().__init__()
         self.title("FFLogs Timeline Generator")
-        self.geometry("500x380") # 稍微调高高度以容纳新复选框
+        self.geometry("500x380")
         
         self.generated_data = None 
 
@@ -537,7 +602,10 @@ class Application(tk.Tk):
         self.api_entry = tk.Entry(self, width=60) 
         self.api_entry.pack(fill='x', **padding)
 
-        # 【新增】：是否启用翻译的复选框
+        saved_key = ConfigManager.get_api_key()
+        if saved_key:
+            self.api_entry.insert(0, saved_key)
+            
         self.translate_var = tk.BooleanVar(value=False)
         tk.Checkbutton(self, text="请求时自动翻译 (&translate=true)", variable=self.translate_var).pack(anchor='w', **padding)
 
@@ -565,12 +633,12 @@ class Application(tk.Tk):
         if not url or not api_key:
             messagebox.showwarning("提示", "请输入 URL 和 API Key")
             return
-
+        ConfigManager.save_api_key(api_key)
         self.status_label.config(text="正在从 FFLogs 下载数据...", fg="blue")
         self.update()
 
-        # 【修改】：传入 translate_var 的状态
-        cast_list, untarget_list, msg = fetch_log_data(url, api_key, self.translate_var.get())
+        # 【修改】：接收 4 个返回值，包含 fight
+        cast_list, untarget_list, fight, msg = fetch_log_data(url, api_key, self.translate_var.get())
 
         if cast_list is None:
             self.status_label.config(text=f"下载失败: {msg}", fg="red")
@@ -579,18 +647,16 @@ class Application(tk.Tk):
 
         self.status_label.config(text="数据获取成功，等待配置...", fg="orange")
         
-        # 2. 提取所有技能名称用于配置
         unique_skills = set(marker.desc for marker in cast_list)
         
-        # 3. 弹出配置窗口
-        dialog = SkillConfigDialog(self, unique_skills)
-        self.wait_window(dialog) # 等待窗口关闭
+        # 【修改】：传入 fight.zone_id 和 fight.zone_name
+        dialog = SkillConfigDialog(self, unique_skills, fight.zone_id, fight.zone_name)
+        self.wait_window(dialog) 
 
         if dialog.result is None:
             self.status_label.config(text="用户取消了操作", fg="gray")
             return
 
-        # 4. 生成最终数据
         self.status_label.config(text="正在处理...", fg="blue")
         json_obj = generate_final_json(cast_list, untarget_list, dialog.result)
 
