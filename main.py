@@ -243,7 +243,10 @@ def get_untargetable_list(fight, config, time_offset):
     events_list = []
 
     # --- 1. 获取 Targetability ---
-    summary_url = f"{SUMMARY_URL_PREFIX}{config.logs_id}?start={fight.start_time}&end={fight.end_time}&api_key={config.api_key}"
+    filter_exp = 'type="targetabilityupdate"'
+    
+    # 注意：这里我们使用 fight.start_time 作为请求起点，以确保能抓到战斗开始时的初始状态
+    summary_url = f"{SUMMARY_URL_PREFIX}{config.logs_id}?start={fight.start_time}&end={fight.end_time}&filter={filter_exp}&api_key={config.api_key}"
     try:
         resp = requests.get(summary_url)
         resp.raise_for_status()
@@ -257,29 +260,14 @@ def get_untargetable_list(fight, config, time_offset):
                     'type': 'targetability',
                     'val': val,
                     'raw': e,
-                    'targetID': e.get('sourceID', e.get('targetID', 0))
+                    'targetID': e.get('sourceID', e.get('targetID', 0))   
                 })
+
     except Exception as e:
         print(f"获取Summary数据失败: {e}")
         return []
 
-    # --- 2. 获取 Overkill ---
-    filter_exp = "overkill>0"
-    damage_url = f"{DAMAGE_URL_PREFIX}{config.logs_id}?start={fight.start_time}&end={fight.end_time}&hostility=1&filter={filter_exp}&api_key={config.api_key}"
-    try:
-        resp = requests.get(damage_url)
-        resp.raise_for_status()
-        damage_data = resp.json()
-        for e in damage_data.get('events', []):
-            events_list.append({
-                'timestamp': e['timestamp'],
-                'type': 'overkill',
-                'val': -1,
-                'raw': e,
-                'targetID': e.get('targetID', 0)
-            })
-    except Exception:
-        pass
+
 
     # --- 3. 排序与计数逻辑 ---
     events_list.sort(key=lambda x: x['timestamp'])
@@ -287,17 +275,11 @@ def get_untargetable_list(fight, config, time_offset):
     count = 1
     current_zero_start_time = None
     current_zero_start_event = None
-    dead_units = set()
 
     for event in events_list:
         prev_count = count
-        if event['type'] == 'targetability':
-            count += event['val']
-        elif event['type'] == 'overkill':
-            t_id = event['targetID']
-            if t_id not in dead_units:
-                count += event['val']
-                dead_units.add(t_id)
+
+        count += event['val']
             
         if count < 0:
             count = 0
@@ -310,7 +292,7 @@ def get_untargetable_list(fight, config, time_offset):
             if current_zero_start_time is not None:
                 end_time = event['timestamp']
                 duration = end_time - current_zero_start_time
-                if duration > 100:
+                if duration > 0:
                      m = Marker(
                         current_zero_start_time - time_offset,
                         "Info", 
