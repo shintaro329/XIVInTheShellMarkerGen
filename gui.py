@@ -1,8 +1,10 @@
 import tkinter as tk
 from tkinter import ttk, messagebox, filedialog
 import json
+import traceback
+import re
 
-# 导入拆分后的模块
+
 from config_manager import ConfigManager
 from markergen import fetch_log_data, generate_final_json
 
@@ -10,18 +12,27 @@ class SkillConfigDialog(tk.Toplevel):
     def __init__(self, parent, skill_list, zone_id, zone_name):
         super().__init__(parent)
         self.zone_id = zone_id
-        self.title(f"导出配置 - {zone_name} (ZoneID: {zone_id})")
+        
+        
+        self.title(f"导出配置 - {zone_name}")
+        
         self.geometry("600x600")
         self.result = None 
         self.skill_vars = {}
 
-        # 1. 读取该 Zone 的本地配置
-        self.saved_config = ConfigManager.get_zone_config(self.zone_id)
+        # 1. 读取全局配置 
+        global_settings = ConfigManager.get_global_settings()
+        default_interval = global_settings.get('min_interval', 1000)
+        default_tracks = global_settings.get('max_tracks', 20)
+
+        # 2. 读取区域配置 
+        try:
+            self.saved_zone_config = ConfigManager.get_zone_config(self.zone_id)
+        except Exception as e:
+            messagebox.showwarning("配置读取警告", f"读取区域配置失败，将使用默认值。\n错误: {e}")
+            self.saved_zone_config = {}
         
-        # 获取保存的值，如果不存在则使用默认值
-        default_interval = self.saved_config.get('min_interval', 1000)
-        default_tracks = self.saved_config.get('max_tracks', 20)
-        saved_skills = self.saved_config.get('skills', {}) # 格式: {'技能名': {'export': True, 'rename': 'xxx'}}
+        saved_skills = self.saved_zone_config.get('skills', {}) 
 
         self.transient(parent)
         self.grab_set()
@@ -32,15 +43,15 @@ class SkillConfigDialog(tk.Toplevel):
 
         tk.Label(top_frame, text="最小间隔(ms):").grid(row=0, column=0, padx=5)
         self.interval_entry = tk.Entry(top_frame, width=10)
-        self.interval_entry.insert(0, str(default_interval)) # 填入保存值
+        self.interval_entry.insert(0, str(default_interval)) 
         self.interval_entry.grid(row=0, column=1, padx=5)
 
         tk.Label(top_frame, text="最大轨道数(Max Tracks):").grid(row=0, column=2, padx=5)
         self.tracks_entry = tk.Entry(top_frame, width=10)
-        self.tracks_entry.insert(0, str(default_tracks)) # 填入保存值
+        self.tracks_entry.insert(0, str(default_tracks)) 
         self.tracks_entry.grid(row=0, column=3, padx=5)
 
-        # --- 中部：技能列表 ---
+        # --- 中部：技能列表  ---
         list_frame = tk.LabelFrame(self, text="技能筛选与重命名", padx=5, pady=5)
         list_frame.pack(fill='both', expand=True, padx=10, pady=5)
 
@@ -71,10 +82,7 @@ class SkillConfigDialog(tk.Toplevel):
 
         for idx, skill_name in enumerate(sorted_skills):
             row = idx + 1
-            
-            # 从配置中读取默认状态
             skill_conf = saved_skills.get(skill_name, {})
-            # 默认勾选，默认显示原名
             default_check = skill_conf.get('export', True)
             default_rename = skill_conf.get('rename', skill_name)
 
@@ -107,7 +115,7 @@ class SkillConfigDialog(tk.Toplevel):
             min_interval = int(self.interval_entry.get())
             max_tracks = int(self.tracks_entry.get())
         except ValueError:
-            messagebox.showerror("错误", "时间间隔和轨道数必须是整数")
+            messagebox.showerror("输入错误", "时间间隔和轨道数必须是整数")
             return
 
         filter_map = {}
@@ -117,23 +125,22 @@ class SkillConfigDialog(tk.Toplevel):
             is_checked = vars['check'].get()
             rename_val = vars['rename'].get().strip()
             
-            # 1. 准备保存到文件的数据
             skills_config_to_save[original_name] = {
                 'export': is_checked,
                 'rename': rename_val
             }
 
-            # 2. 准备传给生成器的数据
             if is_checked:
                 filter_map[original_name] = rename_val if rename_val else original_name
 
-        # --- 保存配置到本地 ---
-        new_zone_config = {
-            'min_interval': min_interval,
-            'max_tracks': max_tracks,
-            'skills': skills_config_to_save
-        }
-        ConfigManager.update_zone_config(self.zone_id, new_zone_config)
+        try:
+            # 1. 保存全局配置
+            ConfigManager.save_global_settings(min_interval, max_tracks)
+            # 2. 保存区域技能配置
+            ConfigManager.update_zone_skills(self.zone_id, skills_config_to_save)
+        except Exception as e:
+            messagebox.showerror("保存失败", f"无法保存配置文件:\n{e}")
+            return
 
         self.result = {
             'min_interval': min_interval,
@@ -147,10 +154,17 @@ class Application(tk.Tk):
         super().__init__()
         self.title("FFLogs Timeline Generator")
         self.geometry("500x380")
+        self.report_callback_exception = self.show_error
         
         self.generated_data = None 
+        self.current_zone_name = None # 新增：用于保存时的文件名
 
         self.create_widgets()
+
+    def show_error(self, exc, val, tb):
+        err_msg = "".join(traceback.format_exception(exc, val, tb))
+        print(err_msg)
+        messagebox.showerror("未处理的错误", f"发生意外错误:\n{val}")
 
     def create_widgets(self):
         padding = {'padx': 10, 'pady': 5}
@@ -163,9 +177,12 @@ class Application(tk.Tk):
         self.api_entry = tk.Entry(self, width=60) 
         self.api_entry.pack(fill='x', **padding)
 
-        saved_key = ConfigManager.get_api_key()
-        if saved_key:
-            self.api_entry.insert(0, saved_key)
+        try:
+            saved_key = ConfigManager.get_api_key()
+            if saved_key:
+                self.api_entry.insert(0, saved_key)
+        except Exception:
+            pass
             
         self.translate_var = tk.BooleanVar(value=False)
         tk.Checkbutton(self, text="请求时自动翻译 (&translate=true)", variable=self.translate_var).pack(anchor='w', **padding)
@@ -194,16 +211,24 @@ class Application(tk.Tk):
         if not url or not api_key:
             messagebox.showwarning("提示", "请输入 URL 和 API Key")
             return
-        ConfigManager.save_api_key(api_key)
+        
+        try:
+            ConfigManager.save_api_key(api_key)
+        except Exception as e:
+            messagebox.showwarning("配置警告", f"API Key 保存失败: {e}")
+
         self.status_label.config(text="正在从 FFLogs 下载数据...", fg="blue")
         self.update()
 
         cast_list, untarget_list, fight, msg = fetch_log_data(url, api_key, self.translate_var.get())
 
         if cast_list is None:
-            self.status_label.config(text=f"下载失败: {msg}", fg="red")
-            messagebox.showerror("错误", msg)
+            self.status_label.config(text=f"下载失败", fg="red")
+            messagebox.showerror("获取数据失败", f"错误详情:\n{msg}")
             return
+
+        # 记录 Zone Name 供保存使用
+        self.current_zone_name = fight.zone_name
 
         self.status_label.config(text="数据获取成功，等待配置...", fg="orange")
         
@@ -217,12 +242,16 @@ class Application(tk.Tk):
             return
 
         self.status_label.config(text="正在处理...", fg="blue")
-        json_obj = generate_final_json(cast_list, untarget_list, dialog.result)
-
-        self.generated_data = json.dumps(json_obj, ensure_ascii=False, indent=2)
-        self.status_label.config(text=f"生成成功! 包含 {len(json_obj['tracks'])} 个轨道", fg="green")
-        self.btn_copy.config(state='normal')
-        self.btn_save.config(state='normal')
+        
+        try:
+            json_obj = generate_final_json(cast_list, untarget_list, dialog.result)
+            self.generated_data = json.dumps(json_obj, ensure_ascii=False, indent=2)
+            self.status_label.config(text=f"生成成功! 包含 {len(json_obj['tracks'])} 个轨道", fg="green")
+            self.btn_copy.config(state='normal')
+            self.btn_save.config(state='normal')
+        except Exception as e:
+            self.status_label.config(text="处理失败", fg="red")
+            messagebox.showerror("处理错误", f"生成 JSON 时发生错误:\n{e}")
 
     def on_copy(self):
         if self.generated_data:
@@ -233,10 +262,18 @@ class Application(tk.Tk):
 
     def on_save(self):
         if not self.generated_data: return
+        
+        # 【修改】构建默认文件名
+        default_name = "timeline.json"
+        if self.current_zone_name:
+            # 清理文件名中的非法字符
+            safe_name = re.sub(r'[\\/*?:"<>|]', "", self.current_zone_name)
+            default_name = f"timeline_{safe_name}.json"
+        
         filepath = filedialog.asksaveasfilename(
             defaultextension=".json",
             filetypes=[("JSON Files", "*.json"), ("All Files", "*.*")],
-            initialfile="timeline.json"
+            initialfile=default_name # 使用新的默认文件名
         )
         if filepath:
             try:
@@ -245,8 +282,7 @@ class Application(tk.Tk):
                 messagebox.showinfo("成功", f"文件已保存至:\n{filepath}")
             except Exception as e:
                 messagebox.showerror("保存失败", str(e))
-
-
+                
 if __name__ == '__main__':
     app = Application()
     app.mainloop()
