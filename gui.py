@@ -92,7 +92,7 @@ class SkillConfigDialog(tk.Toplevel):
 
         sorted_skills = sorted(list(skill_list))
 
-        tk.Label(self.scrollable_frame, text="导出?", font='bold').grid(row=0, column=0, padx=5, pady=5)
+        tk.Label(self.scrollable_frame, text="是否导出", font='bold').grid(row=0, column=0, padx=5, pady=5)
         tk.Label(self.scrollable_frame, text="原名", font='bold').grid(row=0, column=1, padx=5, pady=5, sticky='w')
         tk.Label(self.scrollable_frame, text="导出名称 (可编辑)", font='bold').grid(row=0, column=2, padx=5, pady=5,
                                                                                     sticky='w')
