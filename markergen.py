@@ -352,7 +352,7 @@ def make_track_list(info_list, min_interval, max_tracks):
         marker_list = marker_list_dic.get(track, [])
         last_end_time = marker_list[-1].get_cast_end_time() if marker_list else 0
 
-        while marker.time - last_end_time < min_interval:
+        while marker.time - last_end_time < min_interval and track < max_tracks:
             track += 1
             marker_list = marker_list_dic.get(track, [])
             if not marker_list:
@@ -367,8 +367,6 @@ def make_track_list(info_list, min_interval, max_tracks):
     sorted_tracks = sorted(marker_list_dic.keys())
 
     for track in sorted_tracks:
-        if track >= max_tracks:
-            break
         track_list.append({
             "fileType": "MarkerTrackIndividual",
             "track": track,
